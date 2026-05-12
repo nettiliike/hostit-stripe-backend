@@ -29,8 +29,8 @@ app.post("/create-checkout-session", async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: "https://hostitfi.netlify.app/success.html?session_id={CHECKOUT_SESSION_ID}",
-      cancel_url: "https://hostitfi.netlify.app/myynti.html"
+     success_url: "https://hostflo.netlify.app/success.html?session_id={CHECKOUT_SESSION_ID}",
+cancel_url: "https://hostflo.netlify.app/myynti.html"
     });
 
     res.json({ url: session.url });
