@@ -1,98 +1,98 @@
 const express = require('express');
-const cors = require('cors');
 const Stripe = require('stripe');
+const cors = require('cors');
 
 const app = express();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 app.use(cors({
   origin: [
     'https://hostflo.netlify.app',
     'https://hostitfi.netlify.app',
     'http://localhost:3000',
+    'http://localhost:5173',
     'http://127.0.0.1:5500'
   ]
 }));
+
 app.use(express.json());
 
-// Vaihda nämä omiin Stripen Price ID -tunnuksiin.
-// Price ID löytyy Stripessä: Product -> Pricing -> Price -> price_...
-const PRICE_IDS = {
-  base: {
-    'hostit-app': 'price_1TWUdoP74prEchKVI0Pg5KE1',
-    'hostit-app-laite': 'price_1TWEigP74prEchKVbgtrKxdu',
-    'hostit-app-2-laitetta': 'price_1TWF04P74prEchKVX8VIECbb'
-  },
-  addons: {
-    button: 'price_1TWUXHP74prEchKV2Em8P0wY',
-    leak: 'price_1TWUXHP74prEchKV2Em8P0wY',
-    motion: 'price_1TWUXHP74prEchKV2Em8P0wY',
-    wifiThermometer: 'price_1TWUXHP74prEchKV2Em8P0wY',
-    smokeWireless: 'price_1TWUXhP74prEchKVEOOcgE2E',
-    noise: 'price_1TWUY4P74prEchKVvvtywjsw'
-  }
+if (!process.env.STRIPE_SECRET_KEY) {
+  console.warn('VAROITUS: STRIPE_SECRET_KEY puuttuu Environment Variables -asetuksista.');
+}
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+const BASE_PRICES = {
+  'hostit-software': 'price_1TWUuAP74prEchKVyq2EHa3D',
+  'hostit-app-laite': 'price_1TWUv6P74prEchKV1gFzimWf',
+  'hostit-app-2-laitetta': 'price_1TWUvWP74prEchKVaA66XhXw'
 };
 
 const BASE_NAMES = {
-  'hostit-app': 'Hostit Software',
+  'hostit-software': 'Hostit Software',
   'hostit-app-laite': 'Hostit App + laite',
   'hostit-app-2-laitetta': 'Hostit App + 2 laitetta'
 };
 
+const ADDON_PRICES = {
+  button: 'price_1TWUwaP74prEchKVYp3RLMfd',
+  leak: 'price_1TWUwaP74prEchKVYp3RLMfd',
+  motion: 'price_1TWUwaP74prEchKVYp3RLMfd',
+  wifiThermometer: 'price_1TWUwaP74prEchKVYp3RLMfd',
+  smokeWireless: 'price_1TWUx6P74prEchKVTyGZAeI9',
+  noise: 'price_1TWUxVP74prEchKVHVnKUCEJ'
+};
+
+function cleanQty(value) {
+  const qty = Number(value || 0);
+  if (!Number.isFinite(qty) || qty < 0) return 0;
+  return Math.min(Math.floor(qty), 99);
+}
+
 app.get('/', (req, res) => {
-  res.send('Hostit Stripe backend toimii.');
+  res.send('Hostit Stripe backend OK');
 });
 
 app.post('/create-checkout-session', async (req, res) => {
   try {
-    const { paketti, addons = [] } = req.body;
+    const paketti = req.body.paketti || req.body.package || 'hostit-app-laite';
+    const addons = req.body.addons || {};
 
-    if (!paketti || !PRICE_IDS.base[paketti]) {
-      return res.status(400).json({ error: 'Tuntematon tai puuttuva pääpaketti.' });
+    if (!BASE_PRICES[paketti]) {
+      return res.status(400).json({ error: 'Tuntematon paketti: ' + paketti });
     }
 
     const line_items = [
       {
-        price: PRICE_IDS.base[paketti],
+        price: BASE_PRICES[paketti],
         quantity: 1
       }
     ];
 
-    for (const item of addons) {
-      const addonKey = item.addon;
-      const quantity = Number(item.quantity || 0);
-
-      if (!addonKey || !PRICE_IDS.addons[addonKey]) {
-        return res.status(400).json({ error: `Tuntematon lisälaite: ${addonKey}` });
+    Object.entries(ADDON_PRICES).forEach(([key, priceId]) => {
+      const qty = cleanQty(addons[key]);
+      if (qty > 0) {
+        line_items.push({
+          price: priceId,
+          quantity: qty
+        });
       }
-
-      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
-        return res.status(400).json({ error: `Virheellinen määrä lisälaitteelle: ${addonKey}` });
-      }
-
-      line_items.push({
-        price: PRICE_IDS.addons[addonKey],
-        quantity
-      });
-    }
+    });
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items,
-      allow_promotion_codes: true,
-      billing_address_collection: 'auto',
-      customer_creation: 'always',
       subscription_data: {
         metadata: {
           package: paketti,
-          package_name: BASE_NAMES[paketti],
+          package_name: BASE_NAMES[paketti] || paketti,
           addons: JSON.stringify(addons)
         }
       },
       metadata: {
         package: paketti,
-        package_name: BASE_NAMES[paketti],
+        package_name: BASE_NAMES[paketti] || paketti,
         addons: JSON.stringify(addons)
       },
       success_url: 'https://hostflo.netlify.app/kiitos.html?session_id={CHECKOUT_SESSION_ID}',
