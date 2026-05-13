@@ -1,157 +1,112 @@
-const express = require("express");
-const cors = require("cors");
-const Stripe = require("stripe");
-const admin = require("firebase-admin");
+const express = require('express');
+const cors = require('cors');
+const Stripe = require('stripe');
 
 const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-let firestore = null;
-function initFirebaseAdmin() {
-  if (firestore) return firestore;
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    console.warn("FIREBASE_SERVICE_ACCOUNT_JSON puuttuu. Maksut eivät tallennu Firestoreen.");
-    return null;
-  }
-  if (!admin.apps.length) {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-  }
-  firestore = admin.firestore();
-  return firestore;
-}
+app.use(cors({
+  origin: [
+    'https://hostflo.netlify.app',
+    'https://hostitfi.netlify.app',
+    'http://localhost:3000',
+    'http://127.0.0.1:5500'
+  ]
+}));
+app.use(express.json());
 
-const prices = {
-  "hostit-app-laite": {
-    priceId: "price_1TWEigP74prEchKVbgtrKxdu",
-    name: "Hostit App + laite"
+// Vaihda nämä omiin Stripen Price ID -tunnuksiin.
+// Price ID löytyy Stripessä: Product -> Pricing -> Price -> price_...
+const PRICE_IDS = {
+  base: {
+    'hostit-app': 'price_1TWUdoP74prEchKVI0Pg5KE1',
+    'hostit-app-laite': 'price_1TWEigP74prEchKVbgtrKxdu',
+    'hostit-app-2-laitetta': 'price_1TWF04P74prEchKVX8VIECbb'
   },
-  "hostit-app-2-laitetta": {
-    priceId: "price_1TWF04P74prEchKVX8VIECbb",
-    name: "Hostit App + 2 laitetta"
+  addons: {
+    button: 'price_1TWUXHP74prEchKV2Em8P0wY',
+    leak: 'price_1TWUXHP74prEchKV2Em8P0wY',
+    motion: 'price_1TWUXHP74prEchKV2Em8P0wY',
+    wifiThermometer: 'price_1TWUXHP74prEchKV2Em8P0wY',
+    smokeWireless: 'price_1TWUXhP74prEchKVEOOcgE2E',
+    noise: 'price_1TWUY4P74prEchKVvvtywjsw'
   }
 };
 
-const SITE_URL = process.env.SITE_URL || "https://hostitfi.netlify.app";
+const BASE_NAMES = {
+  'hostit-app': 'Hostit Software',
+  'hostit-app-laite': 'Hostit App + laite',
+  'hostit-app-2-laitetta': 'Hostit App + 2 laitetta'
+};
 
-app.use(cors());
-app.use(express.json());
+app.get('/', (req, res) => {
+  res.send('Hostit Stripe backend toimii.');
+});
 
-function normalizeEmail(email) {
-  return String(email || "").trim().toLowerCase();
-}
+app.post('/create-checkout-session', async (req, res) => {
+  try {
+    const { paketti, addons = [] } = req.body;
 
-async function upsertSubscription({ email, packageKey, packageName, customerId, subscriptionId, status, source }) {
-  const db = initFirebaseAdmin();
-  if (!db || !email) return;
-  const normalizedEmail = normalizeEmail(email);
-  const ref = db.collection("hostitSubscriptions").doc(normalizedEmail);
-  const now = new Date().toISOString();
-  const existedBefore = (await ref.get()).exists;
-  await ref.set({
-    email: normalizedEmail,
-    packageKey: packageKey || "",
-    packageName: packageName || "",
-    customerId: customerId || "",
-    subscriptionId: subscriptionId || "",
-    status: status || "unknown",
-    source: source || "stripe",
-    updatedAt: now
-  }, { merge: true });
-  if (!existedBefore) await ref.set({ createdAt: now }, { merge: true });
-
-  // Päivitä myös mahdollinen organisaatio, jos owner on jo ehtinyt rekisteröityä samalla emaililla.
-  const usersSnap = await db.collection("users").where("email", "==", normalizedEmail).limit(1).get();
-  if (!usersSnap.empty) {
-    const user = usersSnap.docs[0].data();
-    if (user.orgId) {
-      await db.collection("orgs").doc(user.orgId).set({
-        subscriptionStatus: status || "unknown",
-        subscriptionId: subscriptionId || "",
-        stripeCustomerId: customerId || "",
-        subscriptionEmail: normalizedEmail,
-        updatedAt: now
-      }, { merge: true });
+    if (!paketti || !PRICE_IDS.base[paketti]) {
+      return res.status(400).json({ error: 'Tuntematon tai puuttuva pääpaketti.' });
     }
-  }
-}
 
-app.get("/", (req, res) => {
-  res.send("Hostit Stripe backend toimii");
-});
+    const line_items = [
+      {
+        price: PRICE_IDS.base[paketti],
+        quantity: 1
+      }
+    ];
 
-app.get("/check-subscription", async (req, res) => {
-  try {
-    const email = normalizeEmail(req.query.email);
-    if (!email) return res.status(400).json({ active: false, error: "Sähköposti puuttuu." });
-    const db = initFirebaseAdmin();
-    if (!db) return res.status(500).json({ active: false, error: "Firebase Admin ei ole käytössä backendissä." });
+    for (const item of addons) {
+      const addonKey = item.addon;
+      const quantity = Number(item.quantity || 0);
 
-    const snap = await db.collection("hostitSubscriptions").doc(email).get();
-    if (!snap.exists) return res.json({ active: false, status: "missing" });
-    const data = snap.data();
-    const active = data.status === "active" || data.status === "trialing";
-    res.json({ active, ...data });
-  } catch (error) {
-    res.status(500).json({ active: false, error: error.message });
-  }
-});
+      if (!addonKey || !PRICE_IDS.addons[addonKey]) {
+        return res.status(400).json({ error: `Tuntematon lisälaite: ${addonKey}` });
+      }
 
-app.post("/create-checkout-session", async (req, res) => {
-  try {
-    const { paketti, email } = req.body;
-    const packageInfo = prices[paketti];
-    if (!packageInfo) return res.status(400).json({ error: "Virheellinen paketti" });
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
+        return res.status(400).json({ error: `Virheellinen määrä lisälaitteelle: ${addonKey}` });
+      }
+
+      line_items.push({
+        price: PRICE_IDS.addons[addonKey],
+        quantity
+      });
+    }
 
     const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer_email: email ? normalizeEmail(email) : undefined,
-      line_items: [{ price: packageInfo.priceId, quantity: 1 }],
-      metadata: { packageKey: paketti, packageName: packageInfo.name },
-      subscription_data: { metadata: { packageKey: paketti, packageName: packageInfo.name } },
-      success_url: `${SITE_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${SITE_URL}/myynti.html`
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items,
+      allow_promotion_codes: true,
+      billing_address_collection: 'auto',
+      customer_creation: 'always',
+      subscription_data: {
+        metadata: {
+          package: paketti,
+          package_name: BASE_NAMES[paketti],
+          addons: JSON.stringify(addons)
+        }
+      },
+      metadata: {
+        package: paketti,
+        package_name: BASE_NAMES[paketti],
+        addons: JSON.stringify(addons)
+      },
+      success_url: 'https://hostflo.netlify.app/kiitos.html?session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: 'https://hostflo.netlify.app/myynti.html'
     });
+
     res.json({ url: session.url });
-  } catch (err) {
-    console.error("Stripe error:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/confirm-session", async (req, res) => {
-  try {
-    const sessionId = req.query.session_id;
-    if (!sessionId) return res.status(400).json({ error: "session_id puuttuu" });
-
-    const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ["subscription", "customer"] });
-    const subscription = session.subscription;
-    const email = normalizeEmail(session.customer_details?.email || session.customer_email || session.customer?.email);
-    const packageKey = session.metadata?.packageKey || subscription?.metadata?.packageKey || "";
-    const packageName = session.metadata?.packageName || subscription?.metadata?.packageName || "";
-    const status = subscription?.status || session.payment_status || "unknown";
-
-    await upsertSubscription({
-      email,
-      packageKey,
-      packageName,
-      customerId: typeof session.customer === "string" ? session.customer : session.customer?.id,
-      subscriptionId: typeof subscription === "string" ? subscription : subscription?.id,
-      status,
-      source: "checkout_success"
-    });
-
-    res.json({ ok: true, email, packageKey, packageName, status });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
+    console.error('Stripe Checkout error:', error);
+    res.status(500).json({ error: error.message || 'Stripe Checkoutin luonti epäonnistui.' });
   }
-});
-
-app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  // Huom: jos otat webhookin käyttöön, lisää Renderiin STRIPE_WEBHOOK_SECRET.
-  res.json({ received: true, note: "Webhook endpoint placeholder. Success-sivu vahvistaa maksut jo /confirm-session endpointilla." });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Hostit Stripe backend käynnissä portissa ${PORT}`);
+});
