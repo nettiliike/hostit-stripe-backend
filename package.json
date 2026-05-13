@@ -1,9 +1,10 @@
 {
   "name": "hostit-stripe-backend",
   "version": "1.0.0",
-  "main": "server_stripe_lisalaitteet.js",
+  "description": "Hostit Stripe subscription backend",
+  "main": "server.js",
   "scripts": {
-    "start": "node server_stripe_lisalaitteet.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
