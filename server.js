@@ -23,12 +23,14 @@ if (!process.env.STRIPE_SECRET_KEY) {
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const BASE_PRICES = {
+  'hostit-app': 'price_1TWUuAP74prEchKVyq2EHa3D',
   'hostit-software': 'price_1TWUuAP74prEchKVyq2EHa3D',
   'hostit-app-laite': 'price_1TWUv6P74prEchKV1gFzimWf',
   'hostit-app-2-laitetta': 'price_1TWUvWP74prEchKVaA66XhXw'
 };
 
 const BASE_NAMES = {
+  'hostit-app': 'Hostit Software',
   'hostit-software': 'Hostit Software',
   'hostit-app-laite': 'Hostit App + laite',
   'hostit-app-2-laitetta': 'Hostit App + 2 laitetta'
